@@ -24,8 +24,26 @@ def load_docx_text(file_bytes):
     return [p.text.strip() for p in doc.paragraphs]
 
 
+def num_to_chinese(n):
+    """把阿拉伯数字转成中文数字，支持1-99"""
+    digits = "零一二三四五六七八九"
+    if n < 10:
+        return digits[n]
+    elif n < 20:
+        return "十" + (digits[n - 10] if n > 10 else "")
+    else:
+        tens = n // 10
+        units = n % 10
+        if units == 0:
+            return digits[tens] + "十"
+        else:
+            return digits[tens] + "十" + digits[units]
+
+
 def extract_chapter(paragraphs, chapter_num):
-    """提取指定章节的正文和细纲"""
+    """提取指定章节的正文和细纲，支持第1章/第一章混用"""
+    chapter_num_cn = num_to_chinese(chapter_num)
+
     # 找正文起点
     body_start = 0
     for i, t in enumerate(paragraphs):
@@ -33,11 +51,11 @@ def extract_chapter(paragraphs, chapter_num):
             body_start = i
             break
 
-    # 正文：精确匹配 第X章，下一章停止
+    # 正文：精确匹配 第X章/第一章，下一章停止
     body_texts = []
     body_started = False
-    chapter_pattern = re.compile(rf"^第{chapter_num}章")
-    next_pattern = re.compile(r"^第\d+章")
+    chapter_pattern = re.compile(rf"^第({chapter_num}|{chapter_num_cn})章")
+    next_pattern = re.compile(r"^第(\d+|[一二三四五六七八九十百]+)章")
     for i in range(body_start, len(paragraphs)):
         t = paragraphs[i]
         if not t:
@@ -51,11 +69,11 @@ def extract_chapter(paragraphs, chapter_num):
                 break
             body_texts.append(t)
 
-    # 细纲：精确匹配 ChX 或 第X章，下一章停止
+    # 细纲：精确匹配 ChX 或 第X章/第一章，下一章停止
     outline_texts = []
     outline_started = False
-    outline_pattern = re.compile(rf"^\s*Ch{chapter_num}[^0-9]|^\s*第{chapter_num}章")
-    next_outline_pattern = re.compile(r"^\s*Ch\d+[^0-9]|^\s*第\d+章")
+    outline_pattern = re.compile(rf"^\s*Ch{chapter_num}[^0-9]|^\s*第({chapter_num}|{chapter_num_cn})章")
+    next_outline_pattern = re.compile(r"^\s*Ch\d+[^0-9]|^\s*第(\d+|[一二三四五六七八九十百]+)章")
     for i, t in enumerate(paragraphs):
         if outline_pattern.search(t):
             outline_started = True
@@ -129,6 +147,12 @@ def call_deepseek(api_key, system_prompt, user_prompt, model="deepseek-chat", te
 
 
 def build_user_prompt(chapter_num, mode, body, outline, feedback=""):
+    if not body.strip() and not outline.strip():
+        raise ValueError(
+            f"未找到第{chapter_num}章内容。请检查源文件章节标题格式是否为「第{chapter_num}章」或「第{num_to_chinese(chapter_num)}章」，"
+            "且标题位于「正文」标记之后。"
+        )
+
     feedback_instruction = ""
     if feedback and feedback.strip():
         feedback_instruction = f"""\n\n4. 额外修改意见（必须落实）：\n{feedback.strip()}\n请根据以上意见重点调整，并在章末简要说明修改了哪些点。"""
@@ -243,7 +267,11 @@ if uploaded_file is not None:
             if not body:
                 st.warning("未找到该章节正文，将按细纲扩写")
 
-            user_prompt = build_user_prompt(int(single_chapter), single_mode, body, outline, single_feedback)
+            try:
+                user_prompt = build_user_prompt(int(single_chapter), single_mode, body, outline, single_feedback)
+            except ValueError as e:
+                st.error(str(e))
+                st.stop()
 
             with st.spinner("正在调用 DeepSeek，大概需要 30-60 秒..."):
                 try:
@@ -294,7 +322,14 @@ if uploaded_file is not None:
             for idx, ch in enumerate(chapters_to_run):
                 status.text(f"正在处理第 {ch} 章... ({idx + 1}/{total})")
                 body, outline = extract_chapter(paragraphs, ch)
-                user_prompt = build_user_prompt(ch, batch_mode, body, outline)
+
+                try:
+                    user_prompt = build_user_prompt(ch, batch_mode, body, outline)
+                except ValueError as e:
+                    results[ch] = f"【跳过】{e}"
+                    st.error(f"第 {ch} 章：{e}")
+                    progress_bar.progress((idx + 1) / total)
+                    continue
 
                 try:
                     result = call_deepseek(api_key, system_prompt, user_prompt, model, temperature)
