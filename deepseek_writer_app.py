@@ -73,7 +73,7 @@ def count_chinese_words(text):
     return len(re.findall(r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]", text))
 
 
-def build_system_prompt(chapter6_sample, methodology):
+def build_system_prompt(chapter6_sample, methodology, ch1_case=""):
     return f"""你是一位长篇网文写作助手，专门服务于番茄投稿版小说《不周》的创作。你叫「墨笔」，熟悉都市神话、克系悬疑、数据考古类型。
 
 你的核心能力：
@@ -105,6 +105,10 @@ def build_system_prompt(chapter6_sample, methodology):
 
 {chapter6_sample}
 
+下面是第1章去AI味批改案例，请学习其中的修改原则和自检三问：
+
+{ch1_case}
+
 以下是去AI味方法论补充：
 {methodology}
 """
@@ -124,7 +128,11 @@ def call_deepseek(api_key, system_prompt, user_prompt, model="deepseek-chat", te
     return response.choices[0].message.content
 
 
-def build_user_prompt(chapter_num, mode, body, outline):
+def build_user_prompt(chapter_num, mode, body, outline, feedback=""):
+    feedback_instruction = ""
+    if feedback and feedback.strip():
+        feedback_instruction = f"""\n\n4. 额外修改意见（必须落实）：\n{feedback.strip()}\n请根据以上意见重点调整，并在章末简要说明修改了哪些点。"""
+
     if mode == "改写":
         return f"""请按以下要求改写第{chapter_num}章：
 
@@ -139,7 +147,7 @@ def build_user_prompt(chapter_num, mode, body, outline):
 - 字数 2200-2800 字
 - 彻底去 AI 味
 - 参照第6章范本风格
-- 章末附字数和词频自检
+- 章末附字数和词频自检{feedback_instruction}
 
 请直接输出改写后的完整章节。"""
     else:
@@ -151,7 +159,7 @@ def build_user_prompt(chapter_num, mode, body, outline):
 - 字数 2200-2800 字
 - 彻底去 AI 味
 - 参照第6章范本风格
-- 章末附字数和词频自检
+- 章末附字数和词频自检{feedback_instruction}
 
 请直接输出扩写后的完整章节。"""
 
@@ -161,9 +169,11 @@ def build_user_prompt(chapter_num, mode, body, outline):
 def load_knowledge():
     sample_path = Path(__file__).parent / "不周_Ch6_改写样章.md"
     methodology_path = Path(__file__).parent / "去AI味长篇小说写作方法论_report.md"
+    ch1_case_path = Path(__file__).parent / "不周_Ch1_去AI味案例.md"
     chapter6_sample = sample_path.read_text(encoding="utf-8") if sample_path.exists() else "（未找到第6章范本）"
     methodology = methodology_path.read_text(encoding="utf-8") if methodology_path.exists() else ""
-    return build_system_prompt(chapter6_sample, methodology)
+    ch1_case = ch1_case_path.read_text(encoding="utf-8") if ch1_case_path.exists() else ""
+    return build_system_prompt(chapter6_sample, methodology, ch1_case)
 
 
 # ============== 页面 UI ==============
@@ -215,6 +225,12 @@ if uploaded_file is not None:
     with col2:
         single_mode = st.selectbox("模式", ["改写", "扩写"], index=0, key="single_mode")
 
+    single_feedback = st.text_area(
+        "修改意见（可选）",
+        placeholder="例如：加强陆潮的紧张感，减少环境描写，老周台词要更糙...",
+        key="single_feedback",
+    )
+
     if st.button("🚀 开始生成", type="primary", key="single_run"):
         if not api_key:
             st.error("请先填写 DeepSeek API Key")
@@ -227,7 +243,7 @@ if uploaded_file is not None:
             if not body:
                 st.warning("未找到该章节正文，将按细纲扩写")
 
-            user_prompt = build_user_prompt(int(single_chapter), single_mode, body, outline)
+            user_prompt = build_user_prompt(int(single_chapter), single_mode, body, outline, single_feedback)
 
             with st.spinner("正在调用 DeepSeek，大概需要 30-60 秒..."):
                 try:
