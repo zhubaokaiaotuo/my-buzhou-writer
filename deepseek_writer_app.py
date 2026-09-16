@@ -19,25 +19,33 @@ def load_docx_text(file_bytes):
     return [p.text.strip() for p in doc.paragraphs]
 
 
-def list_repo_docs():
-    """列出仓库 docs/ 目录下的文档"""
+def list_novels():
+    """列出仓库 docs/ 目录下的小说子目录"""
     docs_dir = Path(__file__).parent / "docs"
+    if not docs_dir.exists():
+        return []
+    return sorted([d.name for d in docs_dir.iterdir() if d.is_dir()])
+
+
+def list_novel_docs(novel):
+    """列出指定小说目录下的文档"""
+    docs_dir = Path(__file__).parent / "docs" / novel
     if not docs_dir.exists():
         return []
     return sorted([f.name for f in docs_dir.iterdir() if f.suffix.lower() in (".docx", ".md", ".txt")])
 
 
-def load_repo_doc(filename):
-    """读取仓库 docs/ 目录下的 docx 文件"""
-    file_path = Path(__file__).parent / "docs" / filename
+def load_novel_doc(novel, filename):
+    """读取指定小说目录下的 docx 文件"""
+    file_path = Path(__file__).parent / "docs" / novel / filename
     if file_path.exists():
         return file_path.read_bytes()
     return None
 
 
-def load_repo_doc_text(filename):
-    """读取仓库 docs/ 目录下的 docx/md/txt 文件，返回文本"""
-    file_path = Path(__file__).parent / "docs" / filename
+def load_novel_doc_text(novel, filename):
+    """读取指定小说目录下的 docx/md/txt 文件，返回文本"""
+    file_path = Path(__file__).parent / "docs" / novel / filename
     if not file_path.exists():
         return ""
     suffix = file_path.suffix.lower()
@@ -48,11 +56,14 @@ def load_repo_doc_text(filename):
     return ""
 
 
-def load_repo_knowledge_text(filename):
-    """读取仓库根目录下的 md 知识库文件"""
-    file_path = Path(__file__).parent / filename
-    if file_path.exists():
-        return file_path.read_text(encoding="utf-8")
+def load_knowledge_text(novel, filename):
+    """优先读小说目录下的知识库文件，否则读仓库根目录"""
+    novel_path = Path(__file__).parent / "docs" / novel / filename
+    if novel_path.exists():
+        return novel_path.read_text(encoding="utf-8")
+    root_path = Path(__file__).parent / filename
+    if root_path.exists():
+        return root_path.read_text(encoding="utf-8")
     return ""
 
 
@@ -72,16 +83,19 @@ def num_to_chinese(n):
             return digits[tens] + "十" + digits[units]
 
 
+def detect_body_start(paragraphs):
+    """自动检测正文起始位置"""
+    for i, t in enumerate(paragraphs):
+        if "以上为番茄版大纲" in t or t == "正文" or t.startswith("正文"):
+            return i
+    return 0
+
+
 def extract_chapter(paragraphs, chapter_num):
     """提取指定章节的正文和细纲"""
     chapter_num_cn = num_to_chinese(chapter_num)
 
-    # 找正文起点标记
-    body_start = 0
-    for i, t in enumerate(paragraphs):
-        if "以上为番茄版大纲" in t or t == "正文":
-            body_start = i
-            break
+    body_start = detect_body_start(paragraphs)
 
     # 正文
     body_texts = []
@@ -107,6 +121,8 @@ def extract_chapter(paragraphs, chapter_num):
     outline_pattern = re.compile(rf"^\s*Ch{chapter_num}[^0-9]|^\s*第({chapter_num}|{chapter_num_cn})章")
     next_outline_pattern = re.compile(r"^\s*Ch\d+[^0-9]|^\s*第(\d+|[一二三四五六七八九十百]+)章")
     for i, t in enumerate(paragraphs):
+        if i >= body_start:
+            break
         if outline_pattern.search(t):
             outline_started = True
             outline_texts.append(t)
@@ -159,10 +175,10 @@ def call_deepseek(api_key, system_prompt, user_prompt, model="deepseek-chat", te
 
 # ============== Prompt 构建 ==============
 
-def build_system_prompt(chapter6_sample, methodology, ch1_case=""):
+def build_system_prompt(novel, chapter6_sample, methodology, ch1_case=""):
     ch1_section = f"\n\n下面是第1章去AI味批改案例，请学习其中的修改原则和自检三问：\n\n{ch1_case}" if ch1_case else ""
     return f"""你是一位专业悬疑/克系小说编辑与写手，熟悉番茄小说风格，擅长去除AI味。
-你的任务是根据用户提供的《不周》章节，进行改写或扩写，使其语言自然、节奏紧凑、五感真实、人物对话符合身份，彻底消除AI写作痕迹。
+你的任务是根据用户提供的《{novel}》章节，进行改写或扩写，使其语言自然、节奏紧凑、五感真实、人物对话符合身份，彻底消除AI写作痕迹。
 
 核心要求：
 1. 写景必须服务于人物情绪和剧情推进，删掉无关冗余细节。
@@ -181,7 +197,7 @@ def build_system_prompt(chapter6_sample, methodology, ch1_case=""):
 """
 
 
-def build_user_prompt(chapter_num, mode, body, outline, feedback=""):
+def build_user_prompt(novel, chapter_num, mode, body, outline, feedback=""):
     if not body.strip() and not outline.strip():
         raise ValueError(
             f"未找到第{chapter_num}章内容，请检查源文件章节标题是否为「第{chapter_num}章」或「第{num_to_chinese(chapter_num)}章」格式"
@@ -192,7 +208,7 @@ def build_user_prompt(chapter_num, mode, body, outline, feedback=""):
         feedback_instruction = f"\n\n额外修改意见（请重点按以下意见调整）：\n{feedback}\n"
 
     if mode == "改写":
-        return f"""请改写《不周》第{chapter_num}章。
+        return f"""请改写《{novel}》第{chapter_num}章。
 
 【当前正文】：
 {body if body else '（当前正文为空）'}
@@ -209,7 +225,7 @@ def build_user_prompt(chapter_num, mode, body, outline, feedback=""):
 
 请直接输出改写后的完整章节。"""
     else:
-        return f"""请扩写《不周》第{chapter_num}章。
+        return f"""请扩写《{novel}》第{chapter_num}章。
 
 【本章细纲】：
 {outline if outline else '（未提供细纲）'}
@@ -227,8 +243,8 @@ def build_user_prompt(chapter_num, mode, body, outline, feedback=""):
 请直接输出扩写后的完整章节。"""
 
 
-def build_outline_prompt(outline_content, volume, chapter_count):
-    return f"""请根据以下《不周》总大纲，生成第{volume}卷的逐章细纲，共{chapter_count}章。
+def build_outline_prompt(novel, outline_content, volume, chapter_count):
+    return f"""请根据以下《{novel}》总大纲，生成第{volume}卷的逐章细纲，共{chapter_count}章。
 
 【总大纲】：
 {outline_content}
@@ -243,10 +259,10 @@ def build_outline_prompt(outline_content, volume, chapter_count):
 请直接输出第{volume}卷完整细纲。"""
 
 
-def build_continuation_prompt(chapter_num, prev_texts, outline, ch1_case=""):
+def build_continuation_prompt(novel, chapter_num, prev_texts, outline, ch1_case=""):
     prev_section = "\n\n".join(prev_texts) if prev_texts else "（无前文）"
     ch1_section = f"\n\n【Ch1 去AI味案例】：\n{ch1_case}\n请严格按其中原则写作。" if ch1_case else ""
-    return f"""请为《不周》续写第{chapter_num}章。
+    return f"""请为《{novel}》续写第{chapter_num}章。
 
 【前文节选】：
 {prev_section}
@@ -268,41 +284,51 @@ def build_continuation_prompt(chapter_num, prev_texts, outline, ch1_case=""):
 
 # ============== 知识库加载 ==============
 @st.cache_resource
-def load_knowledge():
-    sample_path = Path(__file__).parent / "不周_Ch6_改写样章.md"
-    methodology_path = Path(__file__).parent / "去AI味长篇小说写作方法论_report.md"
-    ch1_case_path = Path(__file__).parent / "不周_Ch1_去AI味案例.md"
-    chapter6_sample = sample_path.read_text(encoding="utf-8") if sample_path.exists() else "（未找到第6章范本）"
-    methodology = methodology_path.read_text(encoding="utf-8") if methodology_path.exists() else ""
-    ch1_case = ch1_case_path.read_text(encoding="utf-8") if ch1_case_path.exists() else ""
-    return build_system_prompt(chapter6_sample, methodology, ch1_case)
+def load_knowledge(novel):
+    chapter6_sample = load_knowledge_text(novel, "不周_Ch6_改写样章.md") or load_knowledge_text(novel, "Ch6_改写样章.md") or "（未找到第6章范本）"
+    methodology = load_knowledge_text(novel, "去AI味长篇小说写作方法论_report.md") or load_knowledge_text(novel, "去AI味方法论.md") or ""
+    ch1_case = load_knowledge_text(novel, "不周_Ch1_去AI味案例.md") or load_knowledge_text(novel, "Ch1_去AI味案例.md") or ""
+    return build_system_prompt(novel, chapter6_sample, methodology, ch1_case)
 
 
 # ============== 页面 UI ==============
 
-st.title("✍️ 墨笔·不周写作助手")
-st.caption("基于 DeepSeek API 的《不周》改写 / 扩写 / 续写工具")
+st.title("✍️ 墨笔·AI 小说写作助手")
+st.caption("基于 DeepSeek API 的多小说改写 / 扩写 / 续写工具")
 
 # 侧边栏配置
 with st.sidebar:
     st.header("⚙️ 配置")
+
+    # 小说选择
+    novels = list_novels()
+    if novels:
+        selected_novel = st.selectbox("选择小说项目", novels, help="docs/ 下的子目录名即为小说名")
+    else:
+        selected_novel = None
+        st.warning("仓库 `docs/` 目录下还没有小说文件夹。请先新建一个。")
+
     api_key = st.text_input("DeepSeek API Key", type="password", help="在 platform.deepseek.com 获取")
     model = st.selectbox("模型", ["deepseek-chat", "deepseek-reasoner"], index=0)
     temperature = st.slider("Temperature", 0.0, 1.0, 0.7, 0.05)
 
     st.divider()
     st.markdown("""
-    **使用步骤：**
-    1. 填入 API Key
-    2. 在「改写/扩写」或「续写」标签选择源文件
-    3. 选择章节号和模式
-    4. 点击运行
+    **文件组织方式：**
+    1. 在仓库根目录新建 `docs/` 文件夹
+    2. 在 `docs/` 里为每部小说建一个子文件夹，比如 `docs/不周/`
+    3. 把大纲、正文、细纲文件放进去
+    4. 文件名建议包含：「大纲」「正文」「细纲」
     """)
+
+if not selected_novel:
+    st.info("👈 请先在左侧选择或创建一个小说项目")
+    st.stop()
+
+system_prompt = load_knowledge(selected_novel)
 
 # 标签页
 tab1, tab2, tab3, tab4 = st.tabs(["改写/扩写", "创作大纲", "生成细纲", "续写"])
-
-system_prompt = load_knowledge()
 
 # ============== Tab 1: 改写/扩写 ==============
 with tab1:
@@ -311,18 +337,18 @@ with tab1:
 
     paragraphs = None
     if source_option == "从仓库选择":
-        repo_files = list_repo_docs()
+        repo_files = list_novel_docs(selected_novel)
         if repo_files:
-            selected_file = st.selectbox("仓库文档列表", repo_files, help="把 docx 文件放进仓库的 docs/ 目录，即可在此选择", key="t1_repo")
+            selected_file = st.selectbox("仓库文档列表", repo_files, help=f"把 docx 文件放进 docs/{selected_novel}/ 目录，即可在此选择", key="t1_repo")
             if selected_file:
-                file_bytes = load_repo_doc(selected_file)
+                file_bytes = load_novel_doc(selected_novel, selected_file)
                 if file_bytes:
                     paragraphs = load_docx_text(file_bytes)
                     st.success(f"已加载：{selected_file}，共 {len(paragraphs)} 段")
         else:
-            st.warning("仓库里还没有文档。请在仓库根目录新建 `docs/` 文件夹，把 docx/md/txt 放进去。")
+            st.warning(f"`docs/{selected_novel}/` 里还没有文档。请把 docx/md/txt 放进去。")
     else:
-        uploaded_file = st.file_uploader("上传《不周》docx 文件", type=["docx"], key="t1_upload")
+        uploaded_file = st.file_uploader("上传 docx 文件", type=["docx"], key="t1_upload")
         if uploaded_file is not None:
             paragraphs = load_docx_text(uploaded_file.getvalue())
             st.success(f"文件已读取，共 {len(paragraphs)} 段")
@@ -341,13 +367,13 @@ with tab1:
         st.header("2. 单章改写")
         col1, col2 = st.columns(2)
         with col1:
-            single_chapter = st.number_input("章节号", min_value=1, max_value=200, value=7, step=1, key="single_ch")
+            single_chapter = st.number_input("章节号", min_value=1, max_value=200, value=1, step=1, key="single_ch")
         with col2:
             single_mode = st.selectbox("模式", ["改写", "扩写"], index=0, key="single_mode")
 
         single_feedback = st.text_area(
             "修改意见（可选）",
-            placeholder="例如：加强陆潮的紧张感，减少环境描写，老周台词要更糙...",
+            placeholder="例如：加强主角的紧张感，减少环境描写，配角台词要更糙...",
             key="single_feedback",
         )
 
@@ -364,7 +390,7 @@ with tab1:
                     st.warning("未找到该章节正文，将按细纲扩写")
 
                 try:
-                    user_prompt = build_user_prompt(int(single_chapter), single_mode, body, outline, single_feedback)
+                    user_prompt = build_user_prompt(selected_novel, int(single_chapter), single_mode, body, outline, single_feedback)
                 except ValueError as e:
                     st.error(str(e))
                     st.stop()
@@ -381,7 +407,7 @@ with tab1:
                         st.download_button(
                             label="📥 下载为 .md",
                             data=result.encode("utf-8"),
-                            file_name=f"不周_Ch{single_chapter}_{single_mode}.md",
+                            file_name=f"{selected_novel}_Ch{single_chapter}_{single_mode}.md",
                             mime="text/markdown",
                         )
                     except Exception as e:
@@ -393,9 +419,9 @@ with tab1:
         st.header("3. 批量改写 / 导出")
         col_b1, col_b2, col_b3 = st.columns(3)
         with col_b1:
-            batch_start = st.number_input("起始章节", min_value=1, max_value=200, value=7, step=1, key="batch_start")
+            batch_start = st.number_input("起始章节", min_value=1, max_value=200, value=1, step=1, key="batch_start")
         with col_b2:
-            batch_end = st.number_input("结束章节", min_value=1, max_value=200, value=17, step=1, key="batch_end")
+            batch_end = st.number_input("结束章节", min_value=1, max_value=200, value=3, step=1, key="batch_end")
         with col_b3:
             batch_size = st.number_input("每批数量", min_value=1, max_value=5, value=3, step=1,
                                          help="Streamlit Cloud 单次运行太长会超时，建议每批 3 章")
@@ -420,7 +446,7 @@ with tab1:
                     body, outline = extract_chapter(paragraphs, ch)
 
                     try:
-                        user_prompt = build_user_prompt(ch, batch_mode, body, outline)
+                        user_prompt = build_user_prompt(selected_novel, ch, batch_mode, body, outline)
                     except ValueError as e:
                         results[ch] = f"【跳过】{e}"
                         st.error(f"第 {ch} 章：{e}")
@@ -457,7 +483,7 @@ with tab1:
                 st.download_button(
                     label="📥 下载全部结果.md",
                     data=combined_md.encode("utf-8"),
-                    file_name=f"不周_Ch{batch_start}-{batch_end}_{batch_mode}.md",
+                    file_name=f"{selected_novel}_Ch{batch_start}-{batch_end}_{batch_mode}.md",
                     mime="text/markdown",
                 )
             with col_d2:
@@ -471,7 +497,7 @@ with tab1:
                 st.download_button(
                     label="📥 下载全部结果.docx",
                     data=docx_io.getvalue(),
-                    file_name=f"不周_Ch{batch_start}-{batch_end}_{batch_mode}.docx",
+                    file_name=f"{selected_novel}_Ch{batch_start}-{batch_end}_{batch_mode}.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
 
@@ -482,11 +508,11 @@ with tab1:
 # ============== Tab 2: 创作大纲 ==============
 with tab2:
     st.header("创作大纲")
-    outline_files = [f for f in list_repo_docs() if "大纲" in f or "outline" in f.lower()]
+    outline_files = [f for f in list_novel_docs(selected_novel) if "大纲" in f or "outline" in f.lower()]
     if outline_files:
         selected_outline = st.selectbox("选择大纲文件", outline_files, key="t2_outline")
         if selected_outline:
-            content = load_repo_doc_text(selected_outline)
+            content = load_novel_doc_text(selected_novel, selected_outline)
             st.text_area("大纲内容", content, height=600, key="t2_content")
             st.download_button(
                 label="📥 下载大纲",
@@ -495,41 +521,41 @@ with tab2:
                 mime="text/plain",
             )
     else:
-        st.warning("仓库 `docs/` 目录下没有找到文件名包含「大纲」的文档。请把大纲文件放进 docs/ 目录。")
+        st.warning(f"`docs/{selected_novel}/` 目录下没有找到文件名包含「大纲」的文档。请把大纲文件放进去。")
 
 
 # ============== Tab 3: 生成细纲 ==============
 with tab3:
     st.header("根据大纲生成细纲")
-    outline_files = [f for f in list_repo_docs() if "大纲" in f or "outline" in f.lower()]
+    outline_files = [f for f in list_novel_docs(selected_novel) if "大纲" in f or "outline" in f.lower()]
     if outline_files:
         selected_outline = st.selectbox("选择大纲文件", outline_files, key="t3_outline")
         col_t3_1, col_t3_2 = st.columns(2)
         with col_t3_1:
             volume = st.number_input("卷数", min_value=1, max_value=10, value=1, step=1, key="t3_volume")
         with col_t3_2:
-            chapter_count = st.number_input("本章细纲共多少章", min_value=1, max_value=200, value=60, step=1, key="t3_ch_count")
+            chapter_count = st.number_input("本章细纲共多少章", min_value=1, max_value=200, value=30, step=1, key="t3_ch_count")
 
         if st.button("🚀 生成细纲", type="primary", key="t3_run"):
             if not api_key:
                 st.error("请先填写 DeepSeek API Key")
             elif selected_outline:
                 with st.spinner("正在读取大纲并调用 DeepSeek..."):
-                    outline_content = load_repo_doc_text(selected_outline)
-                    prompt = build_outline_prompt(outline_content, volume, chapter_count)
+                    outline_content = load_novel_doc_text(selected_novel, selected_outline)
+                    prompt = build_outline_prompt(selected_novel, outline_content, volume, chapter_count)
                     try:
                         result = call_deepseek(api_key, system_prompt, prompt, model, temperature)
                         st.text_area("生成结果", result, height=500, key="t3_result")
                         st.download_button(
                             label="📥 下载细纲.md",
                             data=result.encode("utf-8"),
-                            file_name=f"不周_卷{volume}细纲.md",
+                            file_name=f"{selected_novel}_卷{volume}细纲.md",
                             mime="text/markdown",
                         )
                     except Exception as e:
                         st.error(f"生成失败：{e}")
     else:
-        st.warning("仓库 `docs/` 目录下没有找到大纲文件。请把大纲文件放进 docs/ 目录。")
+        st.warning(f"`docs/{selected_novel}/` 目录下没有找到大纲文件。请把大纲文件放进去。")
 
 
 # ============== Tab 4: 续写 ==============
@@ -539,18 +565,18 @@ with tab4:
 
     paragraphs_t4 = None
     if source_option_t4 == "从仓库选择":
-        body_files = [f for f in list_repo_docs() if "正文" in f]
+        body_files = [f for f in list_novel_docs(selected_novel) if "正文" in f]
         if body_files:
             selected_body = st.selectbox("仓库正文文件", body_files, key="t4_body")
             if selected_body:
-                file_bytes = load_repo_doc(selected_body)
+                file_bytes = load_novel_doc(selected_novel, selected_body)
                 if file_bytes:
                     paragraphs_t4 = load_docx_text(file_bytes)
                     st.success(f"已加载正文：{selected_body}，共 {len(paragraphs_t4)} 段")
         else:
-            st.warning("仓库 `docs/` 目录下没有找到文件名包含「正文」的 docx。")
+            st.warning(f"`docs/{selected_novel}/` 目录下没有找到文件名包含「正文」的 docx。")
     else:
-        uploaded_file_t4 = st.file_uploader("上传《不周》正文 docx 文件", type=["docx"], key="t4_upload")
+        uploaded_file_t4 = st.file_uploader("上传正文 docx 文件", type=["docx"], key="t4_upload")
         if uploaded_file_t4 is not None:
             paragraphs_t4 = load_docx_text(uploaded_file_t4.getvalue())
             st.success(f"文件已读取，共 {len(paragraphs_t4)} 段")
@@ -566,14 +592,14 @@ with tab4:
         use_external_outline = st.checkbox("使用独立细纲文件（如果源文件里没有细纲）", value=False, key="t4_use_outline")
         external_outline = ""
         if use_external_outline:
-            outline_files_t4 = [f for f in list_repo_docs() if "细纲" in f]
+            outline_files_t4 = [f for f in list_novel_docs(selected_novel) if "细纲" in f]
             if outline_files_t4:
                 selected_outline_t4 = st.selectbox("选择细纲文件", outline_files_t4, key="t4_outline")
                 if selected_outline_t4:
-                    external_outline = load_repo_doc_text(selected_outline_t4)
+                    external_outline = load_novel_doc_text(selected_novel, selected_outline_t4)
                     st.success(f"已加载细纲：{selected_outline_t4}")
             else:
-                st.warning("仓库 `docs/` 目录下没有找到文件名包含「细纲」的文档。")
+                st.warning(f"`docs/{selected_novel}/` 目录下没有找到文件名包含「细纲」的文档。")
 
         if st.button("🚀 开始续写", type="primary", key="t4_run"):
             if not api_key:
@@ -597,8 +623,8 @@ with tab4:
                     if not outline.strip():
                         st.warning("未找到本章细纲，将自由续写")
 
-                    ch1_case = load_repo_knowledge_text("不周_Ch1_去AI味案例.md")
-                    prompt = build_continuation_prompt(next_chapter, prev_texts, outline, ch1_case)
+                    ch1_case = load_knowledge_text(selected_novel, "不周_Ch1_去AI味案例.md") or load_knowledge_text(selected_novel, "Ch1_去AI味案例.md")
+                    prompt = build_continuation_prompt(selected_novel, next_chapter, prev_texts, outline, ch1_case)
 
                 with st.spinner("正在调用 DeepSeek 续写..."):
                     try:
@@ -612,7 +638,7 @@ with tab4:
                         st.download_button(
                             label="📥 下载为 .md",
                             data=result.encode("utf-8"),
-                            file_name=f"不周_Ch{next_chapter}_续写.md",
+                            file_name=f"{selected_novel}_Ch{next_chapter}_续写.md",
                             mime="text/markdown",
                         )
                     except Exception as e:
